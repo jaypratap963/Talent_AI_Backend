@@ -99,60 +99,68 @@ wss.on('connection', (browserWs) => {
         // ── Configure the session ─────────────────────────────
         // This is the most important message — sets VAD, voice,
         // instructions, and audio format
-        openaiWs.send(JSON.stringify({
-          type: 'session.update',
-          session: {
+        openaiWs.send(
+          JSON.stringify({
+            type: "session.update",
+            session: {
+              // ── Modalities: audio + text ──────────────────────
+              modalities: ["audio", "text"],
 
-            // ── Modalities: audio + text ──────────────────────
-            modalities: ['audio', 'text'],
+              // ── System instructions (interviewer persona) ─────
+              instructions: buildInterviewerPrompt(
+                resumeText,
+                skills,
+                questionCount,
+              ),
 
-            // ── System instructions (interviewer persona) ─────
-            instructions: buildInterviewerPrompt(resumeText, skills, questionCount),
+              // ── Voice options (uncomment the one you want) ────
+              // 'ash'   = Indian male accent (default)
+              // 'shimmer' = Indian female accent
+              // 'echo'  = US male
+              // 'alloy' = US female
+              voice: "ash",
 
-            // ── Voice: shimmer is warm, closest Indian-EN ─────
-            voice: 'shimmer',
+              // ── Audio format ──────────────────────────────────
+              // pcm16 at 24kHz for both input and output
+              // Browser must send PCM16 @ 24kHz (we handle this in frontend)
+              input_audio_format: "pcm16",
+              output_audio_format: "pcm16",
 
-            // ── Audio format ──────────────────────────────────
-            // pcm16 at 24kHz for both input and output
-            // Browser must send PCM16 @ 24kHz (we handle this in frontend)
-            input_audio_format:  'pcm16',
-            output_audio_format: 'pcm16',
+              // ── Transcription model ───────────────────────────
+              // whisper-1 gives accurate transcripts including fillers
+              input_audio_transcription: {
+                model: "whisper-1",
+              },
 
-            // ── Transcription model ───────────────────────────
-            // whisper-1 gives accurate transcripts including fillers
-            input_audio_transcription: {
-              model: 'whisper-1',
+              // ── SERVER-SIDE VAD CONFIGURATION ─────────────────
+              // This is the entire reason we're using Realtime API.
+              // OpenAI's acoustic model detects speech boundaries.
+              // No volume thresholds. No timers. Neural detection.
+              turn_detection: {
+                type: "server_vad",
+
+                // How sensitive the VAD is (0.0–1.0)
+                // 0.5 is default. Lower = more sensitive (picks up soft voice)
+                // Higher = less sensitive (ignores background noise)
+                threshold: 0.6,
+
+                // How much audio before speech counts (ms)
+                // Prevents single-word fragments from triggering
+                prefix_padding_ms: 500,
+
+                // How long silence AFTER speech before committing (ms)
+                // 800ms = natural conversational pause without cutting off
+                // This is tuned for interview answers (slightly longer than chat)
+                silence_duration_ms: 1200,
+              },
+
+              // ── Response config ───────────────────────────────
+              // Temperature 0.7 = professional but not robotic
+              // Max output tokens capped at 150 = concise questions
+              temperature: 0.7,
             },
-
-            // ── SERVER-SIDE VAD CONFIGURATION ─────────────────
-            // This is the entire reason we're using Realtime API.
-            // OpenAI's acoustic model detects speech boundaries.
-            // No volume thresholds. No timers. Neural detection.
-            turn_detection: {
-              type: 'server_vad',
-
-              // How sensitive the VAD is (0.0–1.0)
-              // 0.5 is default. Lower = more sensitive (picks up soft voice)
-              // Higher = less sensitive (ignores background noise)
-              threshold: 0.4,
-
-              // How much audio before speech counts (ms)
-              // Prevents single-word fragments from triggering
-              prefix_padding_ms: 300,
-
-              // How long silence AFTER speech before committing (ms)
-              // 800ms = natural conversational pause without cutting off
-              // This is tuned for interview answers (slightly longer than chat)
-              silence_duration_ms: 800,
-            },
-
-            // ── Response config ───────────────────────────────
-            // Temperature 0.7 = professional but not robotic
-            // Max output tokens capped at 150 = concise questions
-            temperature: 0.7,
-            max_response_output_tokens: 150,
-          },
-        }));
+          }),
+        );
       });
 
       // ── Handle events from OpenAI → forward to browser ───────
@@ -172,11 +180,16 @@ wss.on('connection', (browserWs) => {
         switch (event.type) {
 
           // ── Session ready ───────────────────────────────────
+          // ONLY session.created sends 'ready'.
+          // session.updated fires on every session.update call mid-interview.
+          // Sending 'ready' there resets frontend phase while Alex is speaking.
           case 'session.created':
-          case 'session.updated':
             sessionReady = true;
             browserWs.send(JSON.stringify({ type: 'ready' }));
             break;
+
+          case 'session.updated':
+            break; // intentionally silent
 
           // ── VAD: user started speaking ──────────────────────
           case 'input_audio_buffer.speech_started':
@@ -316,17 +329,10 @@ wss.on('connection', (browserWs) => {
             },
           }),
         );
-        // 🔥 Trigger first question from Alex
-        openaiWs.send(
-          JSON.stringify({
-            type: "response.create",
-            response: {
-              modalities: ["audio", "text"],
-              instructions:
-                "Start the interview by asking the first question based on the resume.",
-            },
-          }),
-        );
+        // Do NOT send response.create here.
+        // update_session fires after every answer (to update question count).
+        // Sending response.create mid-interview cancels OpenAI's current
+        // audio and starts a new response — cutting Alex off mid-sentence.
       }
       return;
     }
@@ -353,35 +359,50 @@ wss.on('connection', (browserWs) => {
 
 function buildInterviewerPrompt(resumeText, skills, questionCount) {
   const progressNote = questionCount > 0
-    ? `\nYou have asked ${questionCount} questions so far.${questionCount >= 7 ? ' You have 1-2 questions remaining.' : ''}`
+    ? `\nYou have asked ${questionCount} questions so far.${questionCount >= 7 ? ' This is near the end — wrap up naturally in 1-2 more questions.' : ''}`
     : '';
 
-  return `You are Alex, a Senior Technical Interviewer at a top tech company conducting a real job interview via voice.
+  // Detect domain from resume so non-technical candidates get relevant questions
+  const isTechnical = /engineer|developer|software|coding|programming|data|devops|architect/i.test(resumeText);
+  const domainHint  = isTechnical
+    ? 'The candidate has a technical background. Include technical depth where relevant.'
+    : 'The candidate may not have a technical background. Focus on their domain expertise, soft skills, and situational judgment instead of code or systems.';
 
-VOICE INTERVIEW RULES (critical):
-- Keep ALL responses under 3 sentences. You are speaking out loud, not writing.
-- Never use bullet points, numbered lists, markdown, or asterisks. Speak naturally.
-- Ask exactly ONE question per turn. Never stack two questions.
-- Do not say "Great!" or "Awesome!" — these sound fake. Use: "I see.", "Right.", "Interesting." or just proceed.
-- Speak like a real human interviewer, not a chatbot.
+  return `You are Alex, an experienced interviewer conducting a real job interview over voice call.
+
+YOUR PERSONA:
+- Professional, calm, and genuinely curious — not robotic or overly formal
+- You adapt your style to the candidate's field: technical for engineers, strategic for managers, creative for designers, and so on
+- You sound like a real person, not a chatbot
+
+VOICE RULES — follow these strictly:
+- Speak in 2 to 4 natural sentences per turn. Not too short (sounds cold), not too long (hard to follow by ear)
+- Never use bullet points, numbers, markdown, asterisks, or lists — this is spoken audio
+- Ask ONE question per turn only — never stack two questions in one response
+- Avoid filler affirmations: never say "Great!", "Awesome!", "Certainly!", "Of course!", "Sure!"
+- Use natural acknowledgements instead: "I see.", "That makes sense.", "Interesting.", "Right.", or just move forward
+- If a question has a tricky angle, phrase it so it sounds natural when heard — not like a written exam question
 
 CANDIDATE RESUME:
-${resumeText.slice(0, 1500)}
-Key skills: ${skills || 'Software engineering'}
+${resumeText.slice(0, 2000)}
+Key areas: ${skills || 'as mentioned in the resume above'}
+${domainHint}
 ${progressNote}
 
-INTERVIEW STRUCTURE:
-- Turn 1: Warm greeting + ask for self-introduction
-- Turns 2-4: Technical questions based on their skills
-- Turns 5-6: Behavioral questions (STAR format)  
-- Turns 7-8: Situational / problem-solving
-- Turn 9+: Wrap up naturally
+INTERVIEW FLOW:
+- Turn 1: Warm, brief greeting. Ask them to introduce themselves and their background
+- Turns 2-3: Questions about their core domain — what they actually do day to day
+- Turns 4-5: Dig into a specific project or achievement from their resume
+- Turns 6-7: Behavioral — how they handle pressure, conflict, deadlines, or collaboration
+- Turn 8: One forward-looking question — where they want to grow, or how they approach learning
+- Turn 9+: Wrap up warmly and naturally
 
-ADAPTIVE BEHAVIOR:
-- If answer was hesitant or vague: "Can you walk me through a specific example of that?"
-- If answer was strong: increase difficulty next question
-- If answer was very short: "Tell me more about that."
-- If candidate seems stressed: "Take your time, there's no rush."
+ADAPTIVE RULES:
+- Weak or vague answer → follow up with: "Can you give me a specific example of that?"
+- Strong detailed answer → raise the bar slightly on the next question
+- Very short answer → "Tell me a bit more about that."
+- Candidate seems nervous → "Take your time, there's no rush."
+- Off-topic or confused → gently redirect: "Let me rephrase that slightly..."
 
-NEVER: reveal scores, say you're an AI, break character, use filler phrases like "Certainly!" or "Of course!".`;
+NEVER: say you are an AI, reveal any scoring, break character, repeat the question back word for word before answering it.`;
 }
