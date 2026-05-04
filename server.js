@@ -26,16 +26,16 @@
 //   This is NEURAL VAD — no volume thresholds, no timers.
 // ─────────────────────────────────────────────────────────────────
 
-import { WebSocketServer, WebSocket } from 'ws';
-import dotenv from 'dotenv';
+import { WebSocketServer, WebSocket } from "ws";
+import dotenv from "dotenv";
 
 dotenv.config();
 
-const PORT       = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3001;
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 
 if (!OPENAI_KEY) {
-  console.error('❌ OPENAI_API_KEY missing from .env');
+  console.error("❌ OPENAI_API_KEY missing from .env");
   process.exit(1);
 }
 
@@ -43,27 +43,28 @@ const wss = new WebSocketServer({ port: PORT });
 console.log(`✅ TalentAI relay server running on ws://localhost:${PORT}`);
 
 // ── Per-connection handler ────────────────────────────────────────
-wss.on('connection', (browserWs) => {
-  console.log('🔌 Browser client connected');
+wss.on("connection", (browserWs) => {
+  console.log("🔌 Browser client connected");
 
-  let openaiWs    = null;   // WebSocket to OpenAI Realtime
+  let openaiWs = null; // WebSocket to OpenAI Realtime
   let sessionReady = false; // true after session.created received
-  let resumeText   = '';
-  let skills       = '';
-  let questionCount = 0;    // track questions for prompt adaptation
+  let resumeText = "";
+  let skills = "";
+  let questionCount = 0; // track questions for prompt adaptation
 
   // ── Handle messages from Angular browser ─────────────────────
-  browserWs.on('message', (data, isBinary) => {
-
+  browserWs.on("message", (data, isBinary) => {
     // Binary = raw PCM16 audio chunk from mic
     if (isBinary) {
       if (openaiWs?.readyState === WebSocket.OPEN) {
         // Forward raw audio to OpenAI input buffer
-        const b64 = Buffer.from(data).toString('base64');
-        openaiWs.send(JSON.stringify({
-          type: 'input_audio_buffer.append',
-          audio: b64,
-        }));
+        const b64 = Buffer.from(data).toString("base64");
+        openaiWs.send(
+          JSON.stringify({
+            type: "input_audio_buffer.append",
+            audio: b64,
+          }),
+        );
       }
       return;
     }
@@ -77,24 +78,24 @@ wss.on('connection', (browserWs) => {
     }
 
     // ── Init message: browser sends resume context ────────────
-    if (msg.type === 'init') {
-      resumeText    = msg.resumeText  || '';
-      skills        = msg.skills      || '';
+    if (msg.type === "init") {
+      resumeText = msg.resumeText || "";
+      skills = msg.skills || "";
       questionCount = msg.questionCount || 0;
 
       // Open connection to OpenAI Realtime API
       openaiWs = new WebSocket(
-        'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
+        "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17",
         {
           headers: {
-            'Authorization': `Bearer ${OPENAI_KEY}`,
-            'OpenAI-Beta':   'realtime=v1',
+            Authorization: `Bearer ${OPENAI_KEY}`,
+            "OpenAI-Beta": "realtime=v1",
           },
-        }
+        },
       );
 
-      openaiWs.on('open', () => {
-        console.log('✅ Connected to OpenAI Realtime');
+      openaiWs.on("open", () => {
+        console.log("✅ Connected to OpenAI Realtime");
 
         // ── Configure the session ─────────────────────────────
         // This is the most important message — sets VAD, voice,
@@ -164,7 +165,7 @@ wss.on('connection', (browserWs) => {
       });
 
       // ── Handle events from OpenAI → forward to browser ───────
-      openaiWs.on('message', (rawEvent) => {
+      openaiWs.on("message", (rawEvent) => {
         let event;
         try {
           event = JSON.parse(rawEvent.toString());
@@ -173,103 +174,135 @@ wss.on('connection', (browserWs) => {
         }
 
         // Log key events (remove in production)
-        if (!['response.audio.delta'].includes(event.type)) {
-          console.log('OpenAI →', event.type);
+        if (!["response.audio.delta"].includes(event.type)) {
+          console.log("OpenAI →", event.type);
         }
 
         switch (event.type) {
-
           // ── Session ready ───────────────────────────────────
           // ONLY session.created sends 'ready'.
           // session.updated fires on every session.update call mid-interview.
           // Sending 'ready' there resets frontend phase while Alex is speaking.
-          case 'session.created':
+          case "session.created":
             sessionReady = true;
-            browserWs.send(JSON.stringify({ type: 'ready' }));
+            browserWs.send(JSON.stringify({ type: "ready" }));
+            // Trigger Alex's opening greeting immediately after session is ready.
+            // Without this, server_vad waits for the user to speak first.
+            openaiWs.send(
+              JSON.stringify({
+                type: "response.create",
+                response: {
+                  modalities: ["audio", "text"],
+                  instructions:
+                    "Start the interview now. Greet the candidate warmly and ask them to introduce themselves.",
+                },
+              }),
+            );
             break;
 
-          case 'session.updated':
+          case "session.updated":
             break; // intentionally silent
 
           // ── VAD: user started speaking ──────────────────────
-          case 'input_audio_buffer.speech_started':
-            browserWs.send(JSON.stringify({ type: 'user_speech_start' }));
+          case "input_audio_buffer.speech_started":
+            browserWs.send(JSON.stringify({ type: "user_speech_start" }));
             break;
 
           // ── VAD: user stopped speaking ──────────────────────
-          case 'input_audio_buffer.speech_stopped':
-            browserWs.send(JSON.stringify({ type: 'user_speech_stop' }));
+          case "input_audio_buffer.speech_stopped":
+            browserWs.send(JSON.stringify({ type: "user_speech_stop" }));
             break;
 
           // ── VAD committed the audio for transcription ───────
-          case 'input_audio_buffer.committed':
-            browserWs.send(JSON.stringify({ type: 'user_audio_committed' }));
+          case "input_audio_buffer.committed":
+            browserWs.send(JSON.stringify({ type: "user_audio_committed" }));
             break;
 
           // ── Live transcript of what user said ───────────────
-          case 'conversation.item.input_audio_transcription.completed':
-            browserWs.send(JSON.stringify({
-              type:       'user_transcript',
-              transcript: event.transcript,
-              item_id:    event.item_id,
-            }));
+          case "conversation.item.input_audio_transcription.completed":
+            browserWs.send(
+              JSON.stringify({
+                type: "user_transcript",
+                transcript: event.transcript,
+                item_id: event.item_id,
+              }),
+            );
             break;
 
           // ── Alex's response text streaming ──────────────────
-          case 'response.text.delta':
-            browserWs.send(JSON.stringify({
-              type:  'response_text_delta',
-              delta: event.delta,
-            }));
+          case "response.text.delta":
+            browserWs.send(
+              JSON.stringify({
+                type: "response_text_delta",
+                delta: event.delta,
+              }),
+            );
             break;
 
           // ── Alex's response text complete ───────────────────
-          case 'response.text.done':
-            browserWs.send(JSON.stringify({
-              type: 'response_text_done',
-              text: event.text,
-            }));
+          case "response.text.done":
             questionCount++;
+            const responseText = event.text || "";
+            // Check if Alex signalled interview is complete
+            const isComplete = responseText.includes("INTERVIEW_COMPLETE");
+            // Strip the signal token before sending to browser
+            const cleanText = responseText
+              .replace("INTERVIEW_COMPLETE", "")
+              .trim();
+            browserWs.send(
+              JSON.stringify({
+                type: "response_text_done",
+                text: cleanText,
+                interviewDone: isComplete,
+                questionCount: questionCount,
+              }),
+            );
             break;
 
           // ── Alex's audio streaming (PCM16 chunks) ───────────
           // This is the hot path — fires many times per second
-          case 'response.audio.delta':
-            browserWs.send(JSON.stringify({
-              type:  'response_audio_delta',
-              delta: event.delta, // base64 PCM16 chunk
-            }));
+          case "response.audio.delta":
+            browserWs.send(
+              JSON.stringify({
+                type: "response_audio_delta",
+                delta: event.delta, // base64 PCM16 chunk
+              }),
+            );
             break;
 
           // ── Alex's audio complete ────────────────────────────
-          case 'response.audio.done':
-            browserWs.send(JSON.stringify({ type: 'response_audio_done' }));
+          case "response.audio.done":
+            browserWs.send(JSON.stringify({ type: "response_audio_done" }));
             break;
 
           // ── Full response complete ───────────────────────────
-          case 'response.done':
-            browserWs.send(JSON.stringify({
-              type:          'response_done',
-              questionCount: questionCount,
-            }));
+          case "response.done":
+            browserWs.send(
+              JSON.stringify({
+                type: "response_done",
+                questionCount: questionCount,
+              }),
+            );
             break;
 
           // ── Alex is "thinking" (response generating) ────────
-          case 'response.created':
-            browserWs.send(JSON.stringify({ type: 'response_started' }));
+          case "response.created":
+            browserWs.send(JSON.stringify({ type: "response_started" }));
             break;
 
           // ── Error from OpenAI ────────────────────────────────
-          case 'error':
-            console.error('OpenAI error:', event.error);
-            browserWs.send(JSON.stringify({
-              type:    'error',
-              message: event.error?.message || 'OpenAI Realtime error',
-            }));
+          case "error":
+            console.error("OpenAI error:", event.error);
+            browserWs.send(
+              JSON.stringify({
+                type: "error",
+                message: event.error?.message || "OpenAI Realtime error",
+              }),
+            );
             break;
 
           // ── Ignore audio transcript deltas (we use completed) ─
-          case 'conversation.item.input_audio_transcription.delta':
+          case "conversation.item.input_audio_transcription.delta":
             break;
 
           default:
@@ -279,42 +312,46 @@ wss.on('connection', (browserWs) => {
         }
       });
 
-      openaiWs.on('error', (err) => {
-        console.error('OpenAI WS error:', err.message);
-        browserWs.send(JSON.stringify({
-          type:    'error',
-          message: `Connection error: ${err.message}`,
-        }));
+      openaiWs.on("error", (err) => {
+        console.error("OpenAI WS error:", err.message);
+        browserWs.send(
+          JSON.stringify({
+            type: "error",
+            message: `Connection error: ${err.message}`,
+          }),
+        );
       });
 
-      openaiWs.on('close', (code, reason) => {
-        console.log('OpenAI WS closed:', code, reason.toString());
-        browserWs.send(JSON.stringify({ type: 'disconnected' }));
+      openaiWs.on("close", (code, reason) => {
+        console.log("OpenAI WS closed:", code, reason.toString());
+        browserWs.send(JSON.stringify({ type: "disconnected" }));
       });
 
       return;
     }
 
     // ── Manual commit (user pressed stop button) ──────────────
-    if (msg.type === 'commit_audio') {
+    if (msg.type === "commit_audio") {
       if (openaiWs?.readyState === WebSocket.OPEN) {
-        openaiWs.send(JSON.stringify({
-          type: 'input_audio_buffer.commit',
-        }));
+        openaiWs.send(
+          JSON.stringify({
+            type: "input_audio_buffer.commit",
+          }),
+        );
       }
       return;
     }
 
     // ── Trigger Alex's response manually (if needed) ──────────
-    if (msg.type === 'create_response') {
+    if (msg.type === "create_response") {
       if (openaiWs?.readyState === WebSocket.OPEN) {
-        openaiWs.send(JSON.stringify({ type: 'response.create' }));
+        openaiWs.send(JSON.stringify({ type: "response.create" }));
       }
       return;
     }
 
     // ── Update session (e.g. question count changed) ──────────
-    if (msg.type === 'update_session') {
+    if (msg.type === "update_session") {
       if (openaiWs?.readyState === WebSocket.OPEN) {
         questionCount = msg.questionCount || questionCount;
         openaiWs.send(
@@ -339,15 +376,15 @@ wss.on('connection', (browserWs) => {
   });
 
   // ── Browser disconnected ──────────────────────────────────────
-  browserWs.on('close', () => {
-    console.log('🔌 Browser disconnected');
+  browserWs.on("close", () => {
+    console.log("🔌 Browser disconnected");
     if (openaiWs?.readyState === WebSocket.OPEN) {
       openaiWs.close();
     }
   });
 
-  browserWs.on('error', (err) => {
-    console.error('Browser WS error:', err.message);
+  browserWs.on("error", (err) => {
+    console.error("Browser WS error:", err.message);
   });
 });
 
@@ -358,21 +395,25 @@ wss.on('connection', (browserWs) => {
 // ─────────────────────────────────────────────────────────────────
 
 function buildInterviewerPrompt(resumeText, skills, questionCount) {
-  const progressNote = questionCount > 0
-    ? `\nYou have asked ${questionCount} questions so far.${questionCount >= 7 ? ' This is near the end — wrap up naturally in 1-2 more questions.' : ''}`
-    : '';
+  const progressNote =
+    questionCount > 0
+      ? `\nYou have asked ${questionCount} questions so far.${questionCount >= 7 ? " This is near the end — wrap up naturally in 1-2 more questions." : ""}`
+      : "";
 
   // Detect domain from resume so non-technical candidates get relevant questions
-  const isTechnical = /engineer|developer|software|coding|programming|data|devops|architect/i.test(resumeText);
-  const domainHint  = isTechnical
-    ? 'The candidate has a technical background. Include technical depth where relevant.'
-    : 'The candidate may not have a technical background. Focus on their domain expertise, soft skills, and situational judgment instead of code or systems.';
+  const isTechnical =
+    /engineer|developer|software|coding|programming|data|devops|architect/i.test(
+      resumeText,
+    );
+  const domainHint = isTechnical
+    ? "The candidate has a technical background. Include technical depth where relevant."
+    : "The candidate may not have a technical background. Focus on their domain expertise, soft skills, and situational judgment instead of code or systems.";
 
   return `You are Alex, an experienced interviewer conducting a real job interview over voice call.
 
 YOUR PERSONA:
 - Professional, calm, and genuinely curious — not robotic or overly formal
-- You adapt your style to the candidate's field: technical for engineers, strategic for managers, creative for designers, and so on
+- You adapt your style to the candidate's field: technical for engineers, strategic for managers, creative for designers
 - You sound like a real person, not a chatbot
 
 VOICE RULES — follow these strictly:
@@ -380,12 +421,11 @@ VOICE RULES — follow these strictly:
 - Never use bullet points, numbers, markdown, asterisks, or lists — this is spoken audio
 - Ask ONE question per turn only — never stack two questions in one response
 - Avoid filler affirmations: never say "Great!", "Awesome!", "Certainly!", "Of course!", "Sure!"
-- Use natural acknowledgements instead: "I see.", "That makes sense.", "Interesting.", "Right.", or just move forward
-- If a question has a tricky angle, phrase it so it sounds natural when heard — not like a written exam question
+- Use natural acknowledgements instead: "I see.", "That makes sense.", "Interesting.", "Right."
 
 CANDIDATE RESUME:
 ${resumeText.slice(0, 2000)}
-Key areas: ${skills || 'as mentioned in the resume above'}
+Key areas: ${skills || "as mentioned in the resume above"}
 ${domainHint}
 ${progressNote}
 
@@ -394,15 +434,20 @@ INTERVIEW FLOW:
 - Turns 2-3: Questions about their core domain — what they actually do day to day
 - Turns 4-5: Dig into a specific project or achievement from their resume
 - Turns 6-7: Behavioral — how they handle pressure, conflict, deadlines, or collaboration
-- Turn 8: One forward-looking question — where they want to grow, or how they approach learning
-- Turn 9+: Wrap up warmly and naturally
+- Turn 8: One forward-looking question — where they want to grow or how they approach learning
+- Turn 9+: Ask "Do you have any questions for me, or is there anything else you'd like to add?"
+
+ENDING THE INTERVIEW — this is critical:
+- After turn 8 or when the conversation feels complete, ask: "Do you have any questions for me, or anything else you'd like to add?"
+- If the candidate says anything like "No", "That's all", "No thank you", "I'm good", "Nothing else" — respond with a warm closing: thank them by name if known, say the team will be in touch, wish them well, then say exactly this phrase to signal the end: "INTERVIEW_COMPLETE"
+- If they have more questions, answer them naturally, then ask again until they indicate they are done
+- Never end abruptly. Always close warmly before saying INTERVIEW_COMPLETE
 
 ADAPTIVE RULES:
-- Weak or vague answer → follow up with: "Can you give me a specific example of that?"
+- Weak or vague answer → "Can you give me a specific example of that?"
 - Strong detailed answer → raise the bar slightly on the next question
 - Very short answer → "Tell me a bit more about that."
 - Candidate seems nervous → "Take your time, there's no rush."
-- Off-topic or confused → gently redirect: "Let me rephrase that slightly..."
 
-NEVER: say you are an AI, reveal any scoring, break character, repeat the question back word for word before answering it.`;
+NEVER: say you are an AI, reveal any scoring, break character.`;
 }
