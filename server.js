@@ -59,14 +59,13 @@ const server = http.createServer(async (req, res) => {
         const { chatHistory, resumeText } = JSON.parse(body);
 
         const prompt = `You are evaluating a job interview. Based on the conversation below, provide scores and feedback.
-IMPORTANT: If the conversation is empty or has fewer than 3 candidate responses, return all scores as 0 and explain there was insufficient data. Do not invent or assume performance.
+IMPORTANT: If the conversation is empty return all scores as 0 and explain there was insufficient data. Do not invent or assume performance.
 
 Resume summary: ${resumeText}
 
 Interview conversation:
-${chatHistory.length > 0 
-  ? chatHistory.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n')
-  : 'NO CONVERSATION DATA — candidate did not speak'
+${ chatHistory.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n')
+  
 }
 Respond with ONLY valid JSON in exactly this format:
 {
