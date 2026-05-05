@@ -39,8 +39,81 @@ if (!OPENAI_KEY) {
   process.exit(1);
 }
 
-const wss = new WebSocketServer({ port: PORT });
-console.log(`✅ TalentAI relay server running on ws://localhost:${PORT}`);
+import http from 'http';
+
+// Create HTTP server that handles both WebSocket and REST
+const server = http.createServer(async (req, res) => {
+  // CORS headers so Netlify frontend can call this
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204); res.end(); return;
+  }
+
+  if (req.method === 'POST' && req.url === '/evaluate') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { chatHistory, resumeText } = JSON.parse(body);
+
+        const prompt = `You are evaluating a job interview. Based on the conversation below, provide scores and feedback.
+
+Resume summary: ${resumeText}
+
+Interview conversation:
+${chatHistory.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n')}
+
+Respond with ONLY valid JSON in exactly this format:
+{
+  "overallScore": <0-100>,
+  "technicalScore": <0-100>,
+  "communicationScore": <0-100>,
+  "confidenceScore": <0-100>,
+  "strengths": ["...", "...", "..."],
+  "improvements": ["...", "...", "..."],
+  "summary": "2-3 sentence summary of the candidate's performance"
+}`;
+
+        const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': `Bearer ${OPENAI_KEY}`,
+          },
+          body: JSON.stringify({
+            model:       'gpt-4o-mini',
+            temperature: 0.3,
+            messages: [{ role: 'user', content: prompt }],
+          }),
+        });
+
+        const data     = await openaiRes.json();
+        const text     = data.choices?.[0]?.message?.content ?? '';
+        const clean    = text.replace(/```json|```/g, '').trim();
+        const result   = JSON.parse(clean);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+
+      } catch (err) {
+        console.error('Evaluation error:', err);
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  res.writeHead(404); res.end();
+});
+
+// Attach WebSocket server to the same HTTP server
+const wss = new WebSocketServer({ server });
+server.listen(PORT, () => {
+  console.log(`✅ TalentAI server running on port ${PORT}`);
+});
 
 // ── Per-connection handler ────────────────────────────────────────
 wss.on("connection", (browserWs) => {
