@@ -59,7 +59,6 @@ const server = http.createServer(async (req, res) => {
         const { chatHistory, resumeText } = JSON.parse(body);
 
         const prompt = `You are evaluating a job interview. Based on the conversation below, provide scores and feedback.
-IMPORTANT: If the conversation is empty return all scores as 0 and explain there was insufficient data. Do not invent or assume performance.
 
 Resume summary: ${resumeText}
 
@@ -244,6 +243,7 @@ wss.on("connection", (browserWs) => {
         let event;
         try {
           event = JSON.parse(rawEvent.toString());
+           console.log("OpenAI →", event.type); 
         } catch {
           return;
         }
@@ -316,22 +316,6 @@ wss.on("connection", (browserWs) => {
 
           // ── Alex's response text complete ───────────────────
           case "response.text.done":
-            questionCount++;
-            const responseText = event.text || "";
-            // Check if Alex signalled interview is complete
-            const isComplete = responseText.includes("INTERVIEW_COMPLETE");
-            // Strip the signal token before sending to browser
-            const cleanText = responseText
-              .replace("INTERVIEW_COMPLETE", "")
-              .trim();
-            browserWs.send(
-              JSON.stringify({
-                type: "response_text_done",
-                text: cleanText,
-                interviewDone: isComplete,
-                questionCount: questionCount,
-              }),
-            );
             break;
 
           // ── Alex's audio streaming (PCM16 chunks) ───────────
@@ -350,15 +334,53 @@ wss.on("connection", (browserWs) => {
             browserWs.send(JSON.stringify({ type: "response_audio_done" }));
             break;
 
-          // ── Full response complete ───────────────────────────
-          case "response.done":
+          // REPLACE the response.done case with this:
+          // ── Extract Alex's text reliably from response.done ──────
+          case "response.done": {
+            try {
+              const output = event.response?.output ?? [];
+              for (const item of output) {
+                let fullText = "";
+
+                for (const part of item.content ?? []) {
+                  if (part.type === "text" && part.text?.trim()) {
+                    // Text modality output (if it exists)
+                    fullText = part.text.trim();
+                  } else if (part.type === "audio" && part.transcript?.trim()) {
+                    // Audio transcript — THIS is what actually fires
+                    fullText = fullText || part.transcript.trim();
+                  }
+                }
+
+                if (fullText) {
+                  const isComplete = fullText.includes("INTERVIEW_COMPLETE");
+                  const cleanText = fullText
+                    .replace("INTERVIEW_COMPLETE", "")
+                    .trim();
+                  questionCount++;
+                  console.log(
+                    `📤 Alex [Q${questionCount}]:`,
+                    cleanText.slice(0, 60),
+                  );
+                  browserWs.send(
+                    JSON.stringify({
+                      type: "response_text_done",
+                      text: cleanText,
+                      interviewDone: isComplete,
+                      questionCount,
+                    }),
+                  );
+                }
+              }
+            } catch (e) {
+              console.error("response.done text extraction failed:", e);
+            }
+
             browserWs.send(
-              JSON.stringify({
-                type: "response_done",
-                questionCount: questionCount,
-              }),
+              JSON.stringify({ type: "response_done", questionCount }),
             );
             break;
+          }
 
           // ── Alex is "thinking" (response generating) ────────
           case "response.created":
