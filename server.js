@@ -58,23 +58,57 @@ const server = http.createServer(async (req, res) => {
       try {
         const { chatHistory, resumeText } = JSON.parse(body);
 
-        const prompt = `You are evaluating a job interview. Based on the conversation below, provide scores and feedback.
+        const userMessages = chatHistory.filter(m => m.role === 'user');
+const assistantMessages = chatHistory.filter(m => m.role === 'assistant');
 
-Resume summary: ${resumeText}
+const prompt = `You are a senior hiring manager evaluating a completed job interview. Your job is to assess the candidate fairly and accurately based ONLY on what they actually said during the interview. Do not assume, infer, or reward things not demonstrated in the conversation.
 
-Interview conversation:
-${ chatHistory.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n')
-  
-}
-Respond with ONLY valid JSON in exactly this format:
+RESUME CONTEXT:
+${resumeText}
+
+INTERVIEW TRANSCRIPT (${userMessages.length} candidate responses, ${assistantMessages.length} interviewer turns):
+${chatHistory.map(m => `[${m.role === 'user' ? 'CANDIDATE' : 'INTERVIEWER'}]: ${m.content}`).join('\n\n')}
+
+SCORING INSTRUCTIONS — read carefully before scoring:
+
+overallScore (0-100):
+- 90-100: Exceptional. Candidate gave detailed, specific, impressive answers consistently
+- 75-89: Good. Solid answers with clear examples, minor gaps
+- 60-74: Average. Answered adequately but lacked depth or specifics
+- 40-59: Below average. Vague answers, missed key points, struggled with questions
+- 0-39: Poor. Very short answers, off-topic, or mostly silence
+Base this on the QUALITY and DEPTH of candidate's actual responses, not on how many questions were asked.
+
+technicalScore (0-100):
+- Evaluate only if technical questions were asked. Score based on accuracy and depth of technical answers.
+- If the role/resume is non-technical and no technical questions were asked, set this equal to overallScore.
+
+communicationScore (0-100):
+- How clearly did the candidate express ideas?
+- Did they structure answers well? Were they easy to follow?
+- Penalize heavily for very short or one-word answers.
+
+confidenceScore (0-100):
+- Did answers feel assured and direct?
+- Hesitation, frequent "I don't know", or very brief answers should lower this score.
+
+IMPORTANT RULES:
+- If the candidate gave fewer than 3 substantive responses, all scores must be below 40.
+- Base strengths and improvements strictly on things actually said in the transcript — no generic advice.
+- Strengths must be specific: "Gave a detailed example of optimizing a database query" not "Good communication".
+- Improvements must be actionable: "Did not quantify any outcomes — add numbers like 'reduced load time by 40%'" not "Be more specific".
+- The summary must name specific things the candidate said or did not say. No generic statements.
+- If the transcript shows the candidate barely spoke, reflect that honestly in low scores.
+
+Respond with ONLY valid JSON, no markdown, no explanation, exactly this structure:
 {
   "overallScore": <0-100>,
   "technicalScore": <0-100>,
   "communicationScore": <0-100>,
   "confidenceScore": <0-100>,
-  "strengths": ["...", "...", "..."],
-  "improvements": ["...", "...", "..."],
-  "summary": "2-3 sentence summary of the candidate's performance"
+  "strengths": ["specific strength 1", "specific strength 2", "specific strength 3"],
+  "improvements": ["specific improvement 1", "specific improvement 2", "specific improvement 3"],
+  "summary": "2-3 sentences referencing specific things the candidate said or did not say"
 }`;
 
         const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
