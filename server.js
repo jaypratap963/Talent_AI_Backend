@@ -33,107 +33,135 @@ dotenv.config();
 
 const PORT = process.env.PORT || 3001;
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
+const SIMLI_KEY = process.env.SIMLI_API_KEY;
 
 if (!OPENAI_KEY) {
   console.error("❌ OPENAI_API_KEY missing from .env");
   process.exit(1);
 }
 
-import http from 'http';
+import http from "http";
 
 // Create HTTP server that handles both WebSocket and REST
 const server = http.createServer(async (req, res) => {
   // CORS headers so Netlify frontend can call this
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204); res.end(); return;
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
   }
 
-  if (req.method === 'POST' && req.url === '/evaluate') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
+  if (req.method === "POST" && req.url === "/evaluate") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", async () => {
       try {
         const { chatHistory, resumeText } = JSON.parse(body);
 
-        const userMessages = chatHistory.filter(m => m.role === 'user');
-const assistantMessages = chatHistory.filter(m => m.role === 'assistant');
+        const userMessages = chatHistory.filter((m) => m.role === "user");
+        const assistantMessages = chatHistory.filter(
+          (m) => m.role === "assistant",
+        );
 
-const prompt = `You are a senior hiring manager evaluating a completed job interview. Your job is to assess the candidate fairly and accurately based ONLY on what they actually said during the interview. Do not assume, infer, or reward things not demonstrated in the conversation.
+        const prompt = `You are a strict, senior hiring manager evaluating a job interview. Be honest and direct — do not inflate scores to spare feelings. Evaluate ONLY what the candidate actually said. If they gave short or vague answers, reflect that with genuinely low scores.
 
-RESUME CONTEXT:
+CANDIDATE RESUME:
 ${resumeText}
 
 INTERVIEW TRANSCRIPT (${userMessages.length} candidate responses, ${assistantMessages.length} interviewer turns):
-${chatHistory.map(m => `[${m.role === 'user' ? 'CANDIDATE' : 'INTERVIEWER'}]: ${m.content}`).join('\n\n')}
+${chatHistory.map((m) => `[${m.role === "user" ? "CANDIDATE" : "INTERVIEWER"}]: ${m.content}`).join("\n\n")}
 
-SCORING INSTRUCTIONS — read carefully before scoring:
+═══════════════════════════════════════════════
+SCORING RULES — apply strictly:
 
-overallScore (0-100):
-- 90-100: Exceptional. Candidate gave detailed, specific, impressive answers consistently
-- 75-89: Good. Solid answers with clear examples, minor gaps
-- 60-74: Average. Answered adequately but lacked depth or specifics
-- 40-59: Below average. Vague answers, missed key points, struggled with questions
-- 0-39: Poor. Very short answers, off-topic, or mostly silence
-Base this on the QUALITY and DEPTH of candidate's actual responses, not on how many questions were asked.
+overallScore (0–100):
+- 85–100: Exceptional — specific, structured, impressive answers with real examples and metrics
+- 70–84:  Good — solid answers with examples, only minor gaps
+- 50–69:  Average — answered but lacked depth, specifics, or structure
+- 30–49:  Below average — vague, short, or struggled noticeably
+- 0–29:   Poor — mostly 1–2 sentence answers, off-topic, or barely engaged
+→ If fewer than 3 substantive responses: cap overallScore at 30.
+→ Each answer under 20 words: treat it as a significant red flag.
 
-technicalScore (0-100):
-- Evaluate only if technical questions were asked. Score based on accuracy and depth of technical answers.
-- If the role/resume is non-technical and no technical questions were asked, set this equal to overallScore.
+technicalScore (0–100):
+- If technical questions were asked: score on accuracy, depth, and real examples
+- If the candidate said "I don't know" or deflected: penalise heavily
+- If no technical questions were asked: match overallScore
 
-communicationScore (0-100):
-- How clearly did the candidate express ideas?
-- Did they structure answers well? Were they easy to follow?
-- Penalize heavily for very short or one-word answers.
+communicationScore (0–100):
+- Score on clarity, structure, and ease of following
+- 1–2 sentence answers: max 40. Rambling without structure: max 55.
 
-confidenceScore (0-100):
-- Did answers feel assured and direct?
-- Hesitation, frequent "I don't know", or very brief answers should lower this score.
+confidenceScore (0–100):
+- Penalise: "I don't know", "I think", "maybe", "not sure", very short answers
+- Reward: direct, assertive, example-backed answers
 
-IMPORTANT RULES:
-- If the candidate gave fewer than 3 substantive responses, all scores must be below 40.
-- Base strengths and improvements strictly on things actually said in the transcript — no generic advice.
-- Strengths must be specific: "Gave a detailed example of optimizing a database query" not "Good communication".
-- Improvements must be actionable: "Did not quantify any outcomes — add numbers like 'reduced load time by 40%'" not "Be more specific".
-- The summary must name specific things the candidate said or did not say. No generic statements.
-- If the transcript shows the candidate barely spoke, reflect that honestly in low scores.
+═══════════════════════════════════════════════
+STRENGTHS — format requirements:
+- List only genuine strengths backed by something actually said
+- Be specific: "Explained how they used OpenAI to auto-generate exam questions at GLA University" not "Good technical knowledge"
+- If there are no real strengths, say so honestly (e.g., "Answers were too brief to identify clear strengths")
+- Exactly 3 items
 
-Respond with ONLY valid JSON, no markdown, no explanation, exactly this structure:
+IMPROVEMENTS — format requirements (MOST IMPORTANT):
+Each improvement MUST follow this format:
+  "[What they did] → Instead, you could say: '[Specific stronger answer using their resume]'"
+
+Rules:
+- Directly reference what was said (or not said) in the transcript
+- Suggest a better answer that uses SPECIFIC items from their resume (projects, companies, metrics, technologies)
+- If they gave a vague answer about a project, suggest they mention the actual system from their resume with a concrete outcome
+- Include at least one tip for redirecting when struggling (e.g., "If unsure, pivot: 'In my examination platform at GLA, I solved a similar challenge by...'")
+- Exactly 3 items
+
+SUMMARY — 2–3 sentences:
+- Name specific things said or not said
+- Reference actual resume items they failed to leverage
+- Be direct about the overall performance level
+
+═══════════════════════════════════════════════
+EXAMPLE of a good improvements item:
+"Only said 'I worked on Angular apps' without any detail → Instead say: 'At GLA University I built an Angular-based examination platform handling hundreds of concurrent users — I can walk you through how I optimised the API layer for throughput.'"
+
+Respond with ONLY valid JSON, no markdown:
 {
   "overallScore": <0-100>,
   "technicalScore": <0-100>,
   "communicationScore": <0-100>,
   "confidenceScore": <0-100>,
-  "strengths": ["specific strength 1", "specific strength 2", "specific strength 3"],
-  "improvements": ["specific improvement 1", "specific improvement 2", "specific improvement 3"],
-  "summary": "2-3 sentences referencing specific things the candidate said or did not say"
+  "strengths": ["...", "...", "..."],
+  "improvements": ["...", "...", "..."],
+  "summary": "..."
 }`;
 
-        const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type':  'application/json',
-            'Authorization': `Bearer ${OPENAI_KEY}`,
+        const openaiRes = await fetch(
+          "https://api.openai.com/v1/chat/completions",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${OPENAI_KEY}`,
+            },
+            body: JSON.stringify({
+              model: "gpt-4o-mini",
+              temperature: 0.3,
+              messages: [{ role: "user", content: prompt }],
+            }),
           },
-          body: JSON.stringify({
-            model:       'gpt-4o-mini',
-            temperature: 0.3,
-            messages: [{ role: 'user', content: prompt }],
-          }),
-        });
+        );
 
-        const data     = await openaiRes.json();
-        const text     = data.choices?.[0]?.message?.content ?? '';
-        const clean    = text.replace(/```json|```/g, '').trim();
-        const result   = JSON.parse(clean);
+        const data = await openaiRes.json();
+        const text = data.choices?.[0]?.message?.content ?? "";
+        const clean = text.replace(/```json|```/g, "").trim();
+        const result = JSON.parse(clean);
 
-        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(result));
-
       } catch (err) {
-        console.error('Evaluation error:', err);
+        console.error("Evaluation error:", err);
         res.writeHead(500);
         res.end(JSON.stringify({ error: err.message }));
       }
@@ -141,7 +169,111 @@ Respond with ONLY valid JSON, no markdown, no explanation, exactly this structur
     return;
   }
 
-  res.writeHead(404); res.end();
+  if (req.method === "POST" && req.url === "/annotate") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", async () => {
+      try {
+        const { turns, resumeText } = JSON.parse(body);
+
+        const prompt = `You are a senior interview coach. For each candidate answer below, provide specific annotation.
+
+Resume context: ${resumeText}
+
+For each turn, respond with a JSON array. Each item must have:
+- turnIndex: number (from input)
+- question: string (from input)  
+- answer: string (from input)
+- label: one of "strong", "adequate", "weak", "missed"
+  strong = detailed, specific, impressive answer
+  adequate = answered but lacked depth or examples
+  weak = vague, too short, or off-topic
+  missed = completely avoided or misunderstood the question
+- feedback: 1-2 sentences of SPECIFIC feedback referencing what they actually said
+- betterAnswer: 2-3 sentences showing what a strong answer would look like for this specific question
+
+Turns to annotate:
+${turns.map((t) => `Turn ${t.turnIndex}:\nQ: ${t.question}\nA: ${t.answer}`).join("\n\n")}
+
+Respond with ONLY a valid JSON array, no markdown, no explanation.`;
+
+        const openaiRes = await fetch(
+          "https://api.openai.com/v1/chat/completions",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${OPENAI_KEY}`,
+            },
+            body: JSON.stringify({
+              model: "gpt-4o-mini",
+              temperature: 0.3,
+              messages: [{ role: "user", content: prompt }],
+            }),
+          },
+        );
+
+        const data = await openaiRes.json();
+        const text = data.choices?.[0]?.message?.content ?? "[]";
+        const clean = text.replace(/```json|```/g, "").trim();
+        const result = JSON.parse(clean);
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        console.error("Annotation error:", err);
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/simli/start") {
+    try {
+      const simliRes = await fetch("https://api.simli.ai/compose/token", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-simli-api-key": SIMLI_KEY,
+        },
+        body: JSON.stringify({
+          faceId: "cace3ef7-a4c4-425d-a8cf-a5358eb0c427", // note: 7c at the end
+          maxSessionLength: 3600,
+          maxIdleTime: 300,
+          handleSilence: true,
+        }),
+      });
+      const data = await simliRes.json();
+      console.log("Simli token response:", data);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(data));
+    } catch (err) {
+      console.error("Simli error:", err);
+      res.writeHead(500);
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/simli/ice") {
+    try {
+      const iceRes = await fetch("https://api.simli.ai/compose/ice", {
+        method: "GET",
+        headers: { "x-simli-api-key": SIMLI_KEY },
+      });
+      const data = await iceRes.json();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(data));
+    } catch (err) {
+      res.writeHead(500);
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  res.writeHead(404);
+  res.end();
 });
 
 // Attach WebSocket server to the same HTTP server
@@ -227,7 +359,7 @@ wss.on("connection", (browserWs) => {
               // 'shimmer' = Indian female accent
               // 'echo'  = US male
               // 'alloy' = US female
-              voice: "ash",
+              voice: "shimmer",
 
               // ── Audio format ──────────────────────────────────
               // pcm16 at 24kHz for both input and output
@@ -277,7 +409,7 @@ wss.on("connection", (browserWs) => {
         let event;
         try {
           event = JSON.parse(rawEvent.toString());
-           console.log("OpenAI →", event.type); 
+          console.log("OpenAI →", event.type);
         } catch {
           return;
         }
@@ -291,22 +423,13 @@ wss.on("connection", (browserWs) => {
           // ── Session ready ───────────────────────────────────
           // ONLY session.created sends 'ready'.
           // session.updated fires on every session.update call mid-interview.
-          // Sending 'ready' there resets frontend phase while Alex is speaking.
+          // Sending 'ready' there resets frontend phase while Madeline is speaking.
           case "session.created":
             sessionReady = true;
             browserWs.send(JSON.stringify({ type: "ready" }));
-            // Trigger Alex's opening greeting immediately after session is ready.
-            // Without this, server_vad waits for the user to speak first.
-            openaiWs.send(
-              JSON.stringify({
-                type: "response.create",
-                response: {
-                  modalities: ["audio", "text"],
-                  instructions:
-                    "Start the interview now. Greet the candidate warmly and ask them to introduce themselves.",
-                },
-              }),
-            );
+            // Do NOT fire response.create here.
+            // Frontend sends 'start_interview' only after Simli avatar is
+            // connected and rendering — so Madeline's lips sync from word one.
             break;
 
           case "session.updated":
@@ -338,7 +461,7 @@ wss.on("connection", (browserWs) => {
             );
             break;
 
-          // ── Alex's response text streaming ──────────────────
+          // ── Madeline's response text streaming ──────────────────
           case "response.text.delta":
             browserWs.send(
               JSON.stringify({
@@ -348,11 +471,11 @@ wss.on("connection", (browserWs) => {
             );
             break;
 
-          // ── Alex's response text complete ───────────────────
+          // ── Madeline's response text complete ───────────────────
           case "response.text.done":
             break;
 
-          // ── Alex's audio streaming (PCM16 chunks) ───────────
+          // ── Madeline's audio streaming (PCM16 chunks) ───────────
           // This is the hot path — fires many times per second
           case "response.audio.delta":
             browserWs.send(
@@ -363,13 +486,13 @@ wss.on("connection", (browserWs) => {
             );
             break;
 
-          // ── Alex's audio complete ────────────────────────────
+          // ── Madeline's audio complete ────────────────────────────
           case "response.audio.done":
             browserWs.send(JSON.stringify({ type: "response_audio_done" }));
             break;
 
           // REPLACE the response.done case with this:
-          // ── Extract Alex's text reliably from response.done ──────
+          // ── Extract Madeline's text reliably from response.done ──────
           case "response.done": {
             try {
               const output = event.response?.output ?? [];
@@ -393,7 +516,7 @@ wss.on("connection", (browserWs) => {
                     .trim();
                   questionCount++;
                   console.log(
-                    `📤 Alex [Q${questionCount}]:`,
+                    `📤 Madeline [Q${questionCount}]:`,
                     cleanText.slice(0, 60),
                   );
                   browserWs.send(
@@ -416,7 +539,7 @@ wss.on("connection", (browserWs) => {
             break;
           }
 
-          // ── Alex is "thinking" (response generating) ────────
+          // ── Madeline is "thinking" (response generating) ────────
           case "response.created":
             browserWs.send(JSON.stringify({ type: "response_started" }));
             break;
@@ -461,6 +584,41 @@ wss.on("connection", (browserWs) => {
       return;
     }
 
+    // ── Start interview — sent by frontend after Simli is ready ─
+    // Guarantees avatar is rendering before Madeline speaks first word.
+    // REPLACE WITH:
+    if (msg.type === "start_interview") {
+      if (openaiWs?.readyState === WebSocket.OPEN) {
+        // Truncate any conversation items that might exist from a previous session
+        // that wasn't fully closed. This guarantees Maya starts with zero memory.
+        openaiWs.send(
+          JSON.stringify({
+            type: "conversation.item.truncate",
+            item_id: "root",
+            content_index: 0,
+            audio_end_ms: 0,
+          }),
+        );
+
+        // Small delay to let truncate settle, then trigger first question
+        setTimeout(() => {
+          if (openaiWs?.readyState === WebSocket.OPEN) {
+            openaiWs.send(
+              JSON.stringify({
+                type: "response.create",
+                response: {
+                  modalities: ["audio", "text"],
+                  instructions:
+                    "Start the interview now. Greet the candidate warmly and ask them to introduce themselves. Keep it to 2-3 natural sentences.",
+                },
+              }),
+            );
+          }
+        }, 100);
+      }
+      return;
+    }
+
     // ── Manual commit (user pressed stop button) ──────────────
     if (msg.type === "commit_audio") {
       if (openaiWs?.readyState === WebSocket.OPEN) {
@@ -473,7 +631,7 @@ wss.on("connection", (browserWs) => {
       return;
     }
 
-    // ── Trigger Alex's response manually (if needed) ──────────
+    // ── Trigger Madeline's response manually (if needed) ──────────
     if (msg.type === "create_response") {
       if (openaiWs?.readyState === WebSocket.OPEN) {
         openaiWs.send(JSON.stringify({ type: "response.create" }));
@@ -500,7 +658,7 @@ wss.on("connection", (browserWs) => {
         // Do NOT send response.create here.
         // update_session fires after every answer (to update question count).
         // Sending response.create mid-interview cancels OpenAI's current
-        // audio and starts a new response — cutting Alex off mid-sentence.
+        // audio and starts a new response — cutting Madeline off mid-sentence.
       }
       return;
     }
@@ -522,63 +680,120 @@ wss.on("connection", (browserWs) => {
 // ─────────────────────────────────────────────────────────────────
 // INTERVIEWER SYSTEM PROMPT
 // Sent to OpenAI on session.update.
-// This controls Alex's entire personality and behavior.
+// This controls Madeline's entire personality and behavior.
 // ─────────────────────────────────────────────────────────────────
 
 function buildInterviewerPrompt(resumeText, skills, questionCount) {
-  const progressNote =
-    questionCount > 0
-      ? `\nYou have asked ${questionCount} questions so far.${questionCount >= 7 ? " This is near the end — wrap up naturally in 1-2 more questions." : ""}`
-      : "";
-
-  // Detect domain from resume so non-technical candidates get relevant questions
   const isTechnical =
     /engineer|developer|software|coding|programming|data|devops|architect/i.test(
       resumeText,
     );
-  const domainHint = isTechnical
-    ? "The candidate has a technical background. Include technical depth where relevant."
-    : "The candidate may not have a technical background. Focus on their domain expertise, soft skills, and situational judgment instead of code or systems.";
 
-  return `You are Alex, an experienced interviewer conducting a real job interview over voice call.
+  const progressNote =
+    questionCount >= 10
+      ? `\nYou have asked ${questionCount} questions. Start wrapping up — ask one final question then close the interview.`
+      : questionCount >= 7
+        ? `\nYou have asked ${questionCount} questions. You may continue if the candidate is engaged and answers are rich. Otherwise begin wrapping up.`
+        : questionCount > 0
+          ? `\nYou have asked ${questionCount} questions so far.`
+          : "";
+
+  // Build a randomised question pool so every interview feels different
+  const technicalPool = [
+    "Ask them to walk through how they would design a system they've never built before — pick something relevant from their resume.",
+    "Give a real scenario: 'A critical bug hits production at 2am. Walk me through exactly what you do.'",
+    "Ask a 'why did you choose X over Y' question about a specific technology on their resume.",
+    "Ask them to explain the hardest technical problem they've ever debugged — what made it hard and how did they find it.",
+    "Ask: 'Walk me through a time your code broke something in production. What happened and what did you change after?'",
+    "Ask a concrete architecture question: 'If you had to scale your current project to 10x the users, what breaks first?'",
+    "Ask about testing: 'How do you decide what to test and what not to test? Give me a real example from your work.'",
+    "Pick one skill from their resume and ask: 'Give me the most advanced thing you've done with [skill]. Walk me through it.'",
+  ];
+
+  const behavioralPool = [
+    "Ask: 'Tell me about a time you strongly disagreed with a technical decision made by your team. What did you do?'",
+    "Ask: 'Describe a project that failed or went badly. What was your role and what did you learn?'",
+    "Ask: 'Tell me about the most difficult colleague you've worked with. How did you handle it?'",
+    "Ask: 'Walk me through a time you had to learn something completely new under a tight deadline.'",
+    "Ask: 'Tell me about a time you pushed back on a requirement from a stakeholder or manager. How did it go?'",
+    "Ask: 'Describe a time you made a decision without enough information. How did you handle the uncertainty?'",
+    "Ask: 'Tell me about the project you are most proud of. Not because it went well — because of what you personally contributed.'",
+  ];
+
+  const careerPool = [
+    "Ask: 'Why are you looking to leave your current role? What specifically is missing for you there?'",
+    "Ask: 'Looking at your resume, I notice [observe something — a gap, a short tenure, a career change]. Can you walk me through that?'",
+    "Ask: 'What does your ideal next role look like — not the title, but the actual day-to-day work?'",
+    "Ask: 'Where do you see yourself in 3 years? I'm not looking for a rehearsed answer — what do you actually want to build or become?'",
+    "Ask: 'What is the one skill or area you are most actively working to improve right now?'",
+    "Ask about hobbies or life outside work: 'What do you do outside of work that you are genuinely passionate about? Does any of it connect to how you think or work?'",
+  ];
+
+  const closingPool = [
+    "Ask: 'Is there anything on your resume that you feel we haven't covered that you'd really like me to know about?'",
+    "Ask: 'What question were you hoping I would ask today that I haven't asked?'",
+    "Ask: 'Do you have any questions for me about the role or the team?'",
+  ];
+
+  // Pick randomly from each pool so questions vary across interviews
+  const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  const chosenTech1 = pick(technicalPool);
+  const chosenTech2 = pick(technicalPool.filter((q) => q !== chosenTech1));
+  const chosenBeh1 = pick(behavioralPool);
+  const chosenBeh2 = pick(behavioralPool.filter((q) => q !== chosenBeh1));
+  const chosenCareer = pick(careerPool);
+  const chosenClose = pick(closingPool);
+
+  return `You are Madeline, a sharp and experienced senior interviewer conducting a real job interview over a voice call.
 
 YOUR PERSONA:
-- Professional, calm, and genuinely curious — not robotic or overly formal
-- You adapt your style to the candidate's field: technical for engineers, strategic for managers, creative for designers
-- You sound like a real person, not a chatbot
+- Direct, warm, and genuinely curious — not robotic, not overly formal
+- You listen carefully and follow up on what the candidate says — not just the next scripted question
+- You adapt your depth based on how the candidate answers: strong answers get harder follow-ups; weak answers get gentle probes for more
+- You sound like a real senior professional, not a chatbot
 
 VOICE RULES — follow these strictly:
-- Speak in 2 to 4 natural sentences per turn. Not too short (sounds cold), not too long (hard to follow by ear)
+- Speak in 2–4 natural sentences per turn. Not too short (sounds cold), not too long (hard to follow by ear)
 - Never use bullet points, numbers, markdown, asterisks, or lists — this is spoken audio
-- Ask ONE question per turn only — never stack two questions in one response
-- Avoid filler affirmations: never say "Great!", "Awesome!", "Certainly!", "Of course!", "Sure!"
-- Use natural acknowledgements instead: "I see.", "That makes sense.", "Interesting.", "Right."
+- Ask ONE question per turn only — never stack two questions
+- Avoid hollow affirmations: never say "Great!", "Awesome!", "Certainly!", "Of course!", "Sure!"
+- Use natural acknowledgements: "I see.", "That makes sense.", "Interesting.", "Right.", "Go on."
 
 CANDIDATE RESUME:
 ${resumeText.slice(0, 2000)}
-Key areas: ${skills || "as mentioned in the resume above"}
-${domainHint}
+Key skills detected: ${skills || "as mentioned in the resume"}
+${
+  isTechnical
+    ? "This is a technical candidate. Probe technical depth, architecture thinking, and engineering judgement."
+    : "This candidate may not be in a technical role. Focus on domain expertise, stakeholder management, and judgement calls."
+}
 ${progressNote}
 
-INTERVIEW FLOW:
-- Turn 1: Warm, brief greeting. Ask them to introduce themselves and their background
-- Turns 2-3: Questions about their core domain — what they actually do day to day
-- Turns 4-5: Dig into a specific project or achievement from their resume
-- Turns 6-7: Behavioral — how they handle pressure, conflict, deadlines, or collaboration
-- Turn 8: One forward-looking question — where they want to grow or how they approach learning
-- Turn 9+: Ask "Do you have any questions for me, or is there anything else you'd like to add?"
+INTERVIEW STRUCTURE — follow this flow but stay adaptive:
+- Turn 1: Warm greeting. Ask them to briefly introduce themselves and what they are currently working on.
+- Turn 2: ${chosenTech1}
+- Turn 3: Follow up naturally on their answer OR ${chosenBeh1}
+- Turn 4: ${chosenCareer}
+- Turn 5: ${chosenTech2}
+- Turn 6: ${chosenBeh2}
+- Turn 7 onwards: Continue naturally. You may ask ANY of these if not yet covered:
+    * Ask about a gap or short tenure you notice on the resume
+    * Ask about their hobbies or life outside work
+    * Ask a scenario question relevant to their domain
+    * ${chosenClose}
+  Continue as long as the conversation is flowing well. You can go beyond 8 turns if the candidate is engaged and giving rich answers. Aim for depth, not a checklist.
 
-ENDING THE INTERVIEW — this is critical:
-- After turn 8 or when the conversation feels complete, ask: "Do you have any questions for me, or anything else you'd like to add?"
-- If the candidate says anything like "No", "That's all", "No thank you", "I'm good", "Nothing else" — respond with a warm closing: thank them by name if known, say the team will be in touch, wish them well, then say exactly this phrase to signal the end: "INTERVIEW_COMPLETE"
-- If they have more questions, answer them naturally, then ask again until they indicate they are done
-- Never end abruptly. Always close warmly before saying INTERVIEW_COMPLETE
-
-ADAPTIVE RULES:
-- Weak or vague answer → "Can you give me a specific example of that?"
-- Strong detailed answer → raise the bar slightly on the next question
+ADAPTIVE BEHAVIOUR:
+- Vague or weak answer → "Can you give me a specific example of that?"
+- Strong, detailed answer → raise the bar: ask a harder or more nuanced follow-up
 - Very short answer → "Tell me a bit more about that."
 - Candidate seems nervous → "Take your time, there's no rush."
+- Candidate gives a textbook answer → "That's the standard answer — what actually happened in your case?"
 
-NEVER: say you are an AI, reveal any scoring, break character.`;
+ENDING THE INTERVIEW:
+- When the conversation feels complete (typically after 8–15 turns), ask the closing question you chose: "${chosenClose}"
+- Once the candidate indicates they have nothing more to add, give a warm, personal closing. Thank them by name if you know it. Say the team will be in touch. Then say exactly this phrase to signal the end: INTERVIEW_COMPLETE
+- Never end abruptly. Always close with warmth before INTERVIEW_COMPLETE.
+
+NEVER: say you are an AI, reveal scoring, repeat a question you already asked, break character.`;
 }
